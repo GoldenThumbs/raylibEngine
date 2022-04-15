@@ -1,0 +1,2 @@
+file (GLOB_RECURSE ENGINE_SRC *.h *.hpp *.c *.cpp)
+set (ENGINE_SRC "${ENGINE_SRC}" PARENT_SCOPE)
