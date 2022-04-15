@@ -141,6 +141,16 @@ public:
 		ortho = ortho_;
 	}
 
+	Matrix& ProjectionMatrix()
+	{
+		return _proj;
+	}
+
+	Matrix& ViewMatrix()
+	{
+		return _view;
+	}
+
 	void Calculate(double aspect, Vector3 position, Quaternion rotation)
 	{
 		if (ortho)
@@ -180,7 +190,7 @@ public:
 	}
 };
 
-i32 main(void)
+int main(void)
 {
 	const double aspect = 800.0 / 600.0;
 	InitWindow(800, 600, "Raylib Window");
@@ -208,7 +218,7 @@ i32 main(void)
 		BeginDrawing();
 			ClearBackground(RAYWHITE);
 			
-			DrawTexture(buf.specTex, 0, 0, WHITE);
+			DrawTexture(buf.normTex, 0, 0, WHITE);
 			DrawText("Window", 16, 16, 20, DARKGRAY);
 		EndDrawing();
 	}
