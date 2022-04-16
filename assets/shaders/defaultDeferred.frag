@@ -8,7 +8,8 @@ out vec4 normBuf;
 
 void main()
 {
+	vec3 n = normalize(fragNormal);
 	colorBuf = vec4(0.75, 0.75, 0.25, 1.0);
 	specBuf = vec4(0.5, 0.5, 0.5, 1.0);
-	normBuf = vec4(fragNormal, 1.0);
+	normBuf = vec4(n * 0.5 + 0.5, 1.0);
 }
