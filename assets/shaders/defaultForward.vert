@@ -1,6 +1,6 @@
 #version 330
 
-#define MAX_LIGHTS 8
+#define MAX_LIGHTS 64
 
 struct SKF_Light
 {

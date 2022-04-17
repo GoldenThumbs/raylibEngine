@@ -1,9 +1,14 @@
 #include "graphics/camera.h"
+#include "physics/physics_world.h"
+#include "physics/collider_plane.h"
+#include "physics/collider_sphere.h"
+#include "physics/collider_box.h"
+#include "physics/rigidbody.h"
 #include <raymath.h>
 
 using namespace Skiff;
 
-#define MAX_LIGHTS 8
+#define MAX_LIGHTS 64
 
 enum class SKF_LightType : u8
 {
@@ -62,83 +67,6 @@ void UpdateLights(Shader shader, SKF_Light light)
 	SetShaderValue(shader, light.cLoc, c, SHADER_UNIFORM_VEC4);
 	SetShaderValue(shader, light.rLoc, &light.radius, SHADER_UNIFORM_FLOAT);
 	SetShaderValue(shader, light.tLoc, &light.type, SHADER_UNIFORM_INT);
-}
-
-struct SKF_CollisionInfo
-{
-	float depth;
-	bool hit;
-	Vector3 normal;
-};
-
-struct SKF_Plane
-{
-	Vector3 normal;
-	float distance;
-};
-
-struct SKF_BoundingSphere
-{
-	Vector3 position;
-	float radius;
-};
-
-struct SKF_BoundingBox
-{
-	Vector3 min;
-	Vector3 max;
-};
-
-SKF_CollisionInfo CheckBoxes(SKF_BoundingBox a, SKF_BoundingBox b)
-{
-	Vector3 d;
-	d.x = fmaxf(a.min.x - b.max.x, b.min.x - a.max.x);
-	d.y = fmaxf(a.min.y - b.max.y, b.min.y - a.max.y);
-	d.z = fmaxf(a.min.z - b.max.z, b.min.z - a.max.z);
-
-	float dist = fmaxf(d.x, fmaxf(d.y, d.z));
-
-	return SKF_CollisionInfo{ dist, dist < 0, Vector3Normalize(d) };
-}
-
-SKF_CollisionInfo CheckSpheres(SKF_BoundingSphere a, SKF_BoundingSphere b)
-{
-	Vector3 d = Vector3Subtract(a.position, b.position);
-
-	float dist = Vector3Length(d) - (a.radius + b.radius);
-
-	return SKF_CollisionInfo{ dist, dist < 0, Vector3Normalize(d) };
-}
-
-SKF_CollisionInfo CheckSphereAndBox(SKF_BoundingSphere a, SKF_BoundingBox b)
-{
-	Vector3 d;
-	d.x = fmaxf(b.min.x, fminf(a.position.x, b.max.x));
-	d.y = fmaxf(b.min.y, fminf(a.position.y, b.max.y));
-	d.z = fmaxf(b.min.z, fminf(a.position.z, b.max.z));
-
-	float dist = Vector3Length(Vector3Subtract(d, a.position)) - a.radius;
-
-	return SKF_CollisionInfo{ dist, dist < 0, Vector3Normalize(d) };
-}
-
-SKF_CollisionInfo CheckSphereAndPlane(SKF_BoundingSphere a, SKF_Plane b)
-{
-	float sphereDist = Vector3DotProduct(b.normal, a.position) - b.distance;
-	float dist = sphereDist - a.radius;
-
-	return SKF_CollisionInfo{ dist, dist < 0, b.normal };
-}
-
-SKF_CollisionInfo CheckBoxAndPlane(SKF_BoundingBox a, SKF_Plane b)
-{
-	Vector3 center = Vector3Scale(Vector3Add(a.max, a.min), 0.5f);
-	Vector3 extents = Vector3Subtract(a.max, center);
-
-	float r = fabsf(Vector3DotProduct(extents, b.normal));
-	float dist = Vector3DotProduct(b.normal, center) - b.distance - r;
-
-	return SKF_CollisionInfo{ dist, dist < 0, b.normal };
 }
 
 struct SKF_PlayerSettings
@@ -231,6 +159,7 @@ public:
 
 int main(void)
 {
+	const float dt = 0.01f;
 	const i32 screenW = 1600;
 	const i32 screenH = 900;
 	const double aspect = (double)screenW / (double)screenH;
@@ -238,11 +167,25 @@ int main(void)
 
 	DisableCursor();
 	
-	SKF_Plane plane = SKF_Plane{ Vector3{ 0, 1, 0 }, 0 };
-	SKF_BoundingBox box = SKF_BoundingBox{ Vector3{ 8, -1, -1 }, Vector3{ 10, 1, 1 } };
-	SKF_BoundingSphere sphere = SKF_BoundingSphere{ Vector3{ -9, 1, 0 }, 1.0f };
+	SKF_PhysicsWorld world = SKF_PhysicsWorld(Vector3{ 0, -9.81f, 0 });
+
+	SKF_ImpulseSolver solver1 = SKF_ImpulseSolver();
+	SKF_PositionSolver solver2 = SKF_PositionSolver();
+
+	world.AddSolver(&solver1);
+	world.AddSolver(&solver2);
+
+	SKF_Plane plane = SKF_Plane(Vector3{ 0, 1, 0 }, -1.0f);
+	SKF_RigidBody physicalPlane = SKF_RigidBody(&plane, 0.0f, false, false);
+
+	world.AddBody(&physicalPlane);
 
 	SKF_Player player = SKF_Player(SKF_PlayerSettings(), Vector3{ 0, 1.5f, 0 }, aspect, Vector2{ 0, 0 });
+
+	SKF_BoundingSphere playerBall = SKF_BoundingSphere(player.position, 1.0f);
+	SKF_RigidBody playerBody = SKF_RigidBody(&playerBall, 0.0, false, false);
+
+	world.AddBody(&playerBody);
 
 	Shader fill = LoadShader(ASSETS_PATH"shaders/defaultForward.vert", ASSETS_PATH"shaders/defaultForward.frag");
 
@@ -261,74 +204,81 @@ int main(void)
 	ground.materials[0].maps[0].texture = tex;
 
 	SKF_Light lightsArray[MAX_LIGHTS];
+	SKF_BoundingSphere spheresArray[MAX_LIGHTS];
+	SKF_RigidBody bodyArray[MAX_LIGHTS];
 	u32 lightsAmount = 0;
 
 	for (int i=0; i<MAX_LIGHTS; i++)
 	{
-		int _lX = GetRandomValue(-256, 256);
-		int _lY = GetRandomValue( 000, 512);
-		int _lZ = GetRandomValue(-256, 256);
-		Vector3 position = Vector3{ (float)_lX/64.0f, (float)_lY/256.0f, (float)_lZ/64.0f };
+		i32 _lX = (i32)GetRandomValue(-2, 2) * 3;
+		i32 _lY = (i32)GetRandomValue( 0, 512);
+		i32 _lZ = (i32)GetRandomValue(-2, 2) * 3;
+		Vector3 position = Vector3{ (float)_lX, (float)_lY/256.0f, (float)_lZ };
 		u8 _lR = (u8)GetRandomValue(64, 255);
 		u8 _lG = (u8)GetRandomValue(64, 255);
 		u8 _lB = (u8)GetRandomValue(64, 255);
 		Color color = Color{ _lR, _lG, _lB, 255 };
 		lightsArray[i] = LoadLight(fill, position, color, 4.0f, SKF_LightType::SKF_LT_POINT, lightsAmount);
+		spheresArray[i] = SKF_BoundingSphere(position, 1.0f);
+		bodyArray[i] = SKF_RigidBody(&spheresArray[i], 1.0f, true, true);
+		world.AddBody(&bodyArray[i]);
 	}
 
 	lightsArray[0].color = DARKGRAY;
 	lightsArray[0].type = SKF_LightType::SKF_LT_DIRECTIONAL;
 	lightsArray[0].direction = Vector3RotateByQuaternion(Vector3{ 0, 0, 1 }, QuaternionFromEuler(-45.0f * DEG2RAD, 30.0f * DEG2RAD, 0));
 
+	float accumulator = 0.0f;
 	SetTargetFPS(60);
 	while (!WindowShouldClose())
 	{
-		float delta = GetFrameTime();
+		float frameTime = GetFrameTime();
 
-		player.Run(delta);
+		if (IsKeyDown(KEY_SPACE))
+		{
+			for (i32 i=0; i<MAX_LIGHTS; i++)
+			{
+				float _rJX = (float)GetRandomValue(-128, 128) / 256.0f;
+				float _rJY = (float)GetRandomValue(-128, 128) / 256.0f;
+				float _rJZ = (float)GetRandomValue(-128, 128) / 256.0f;
+				bodyArray[i].force = Vector3{ _rJX, 50.0f + _rJY, _rJZ };
+			}
+		}
+
+		accumulator += frameTime;
+
+		while (accumulator >= dt)
+		{
+			world.Run(dt);
+			accumulator -= dt;
+		}
+
+		player.Run(frameTime);
+		playerBall.position = player.position;
 
 		Vector3 extraPos = Vector3RotateByQuaternion(Vector3{ 1.0f, 0, -2.5f }, player.GetRotation());
 		extraPos = Vector3Add(player.position, extraPos);
-
-		sphere.position.y = 1.0f + sinf((float)GetTime() * 0.75f);
-		float bY = 1.0f + sinf(1.0f + (float)GetTime() * 0.75f);
-		box.max.y = bY + 1.0f;
-		box.min.y = bY - 1.0f;
-
-		SKF_CollisionInfo collS = CheckSphereAndPlane(sphere, plane);
-		SKF_CollisionInfo collB = CheckBoxAndPlane(box, plane);
-
-		Color colorS = SKYBLUE;
-		if (collS.hit)
-			colorS = DARKBLUE;
-		Color colorB = PINK;
-		if (collB.hit)
-			colorB = MAROON;
 
 		BeginDrawing();
 			ClearBackground(DARKGRAY);
 			
 			player.camera.Begin();
-				for (int i=0; i<MAX_LIGHTS; i++)
+				for (i32 i=0; i<MAX_LIGHTS; i++)
 				{
-					SKF_Light light = lightsArray[i];
+					lightsArray[i].position = spheresArray[i].GetCenter();
 
-					UpdateLights(fill, light);
+					UpdateLights(fill, lightsArray[i]);
+					DrawSphere(lightsArray[i].position, spheresArray[i].radius, lightsArray[i].color);
 				}
 				DrawModel(object, Vector3{ 0, 0.5f, 0 }, 6.0f, WHITE);
-				DrawModel(ground, Vector3{ 0, 0, 0 }, 1.0f, GRAY);
+				DrawModel(ground, Vector3{ 0, plane.GetCenter().y, 0 }, 1.0f, GRAY);
 				DrawModel(viewObj, extraPos, 1.0f, YELLOW);
-				DrawSphereEx(sphere.position, sphere.radius, 16, 32, colorS);
-				Vector3 _bS = Vector3Subtract(box.max, box.min);
-				_bS.x = fabsf(_bS.x);
-				_bS.y = fabsf(_bS.y);
-				_bS.z = fabsf(_bS.z);
-				Vector3 _bP = Vector3Add(box.min, Vector3Scale(_bS, 0.5f));
-				DrawCubeV(_bP, _bS, colorB);
 			player.camera.End();
 			DrawText("Window", 16, 16, 20, DARKGRAY);
 		EndDrawing();
 	}
+
+	world.Clear();
 
 	UnloadShader(fill);
 	UnloadTexture(tex);
